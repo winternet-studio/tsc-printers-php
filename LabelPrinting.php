@@ -12,9 +12,18 @@ namespace winternet\tscprinters;
  *
  * Example:
  * ```
- * $tsc = new \winternet\tscprinters\LabelPrinting(...);
- * $tsc->newLabel(...);
- * $tsc->addText(...);
+ * $tsc = new \winternet\tscprinters\LabelPrinting(['USB', 'TSPL', 'TSCDA220']);
+ * $tsc->newLabel([
+ * 	'width' => 101.6,
+ * 	'height' => 152.4,
+ * 	'sensor' => 'gap',
+ * 	'vertical' => 3,
+ * ]);
+ * $tsc->addText(['text' => '123000003', 'font' => '2', 'x' => 0, 'y' => 0]);
+ * $tsc->addText(['text' => 'ABCDefghi', 'font' => '2', 'x' => 0, 'y' => 30]);
+ * $tsc->addText(['text' => '987650001', 'font' => ['type' => 'windowsfont', 'facename' => 'Arial', 'fontheight' => 48, 'fontstyle' => 0, 'fontunderline' => 0], 'x' => 0, 'y' => 60]);
+ * $tsc->addLine(['x' => 0, 'y' => 60, 'width' => 30, 'thickness' => 3]);
+ * $tsc->addImage(['imageFile' => __DIR__ .'/myimage.png', 'x' => 0, 'y' => 60]);
  * $tsc->printLabel();
  * ```
  *
@@ -193,17 +202,21 @@ class LabelPrinting {
 
 	/**
 	 * @param array $params : Available parameters:
-	 *   - ...
-	 *   - `font` :
-	 *       ZPL: see page 894 in "ZPL II Programming Guide Vol 1.pdf" (Part Number: 13979L-010 Rev. A, dated 6/19/08)
-	 *       TSPL: see page 90 in "TSPL_TSPL2_Programming.pdf" from https://www.tscprinters.com/EN/support/support_download/DA210-DA220%20Series
-	 *   - `xMultiplication` : 1-0 (TSPL only)
-	 *   - `yMultiplication` : 1-0 (TSPL only)
+	 *   - `x`
+	 *   - `y`
+	 *   - `text` : the text to write
+	 *   - `font` : the font to use
+	 *       - ZPL: see page 894 in "ZPL II Programming Guide Vol 1.pdf" (Part Number: 13979L-010 Rev. A, dated 6/19/08)
+	 *       - TSPL: see page 90 in "TSPL_TSPL2_Programming.pdf" from https://www.tscprinters.com/EN/support/support_download/DA210-DA220%20Series
+	 *         - to use the ActiveX functions ActiveXprinterfont() and ActiveXwindowsfont() mentioned in "ActiveX Dll Functions Description.doc" you can provide arrays like this:
+	 *           - `['type' => 'printerfont', 'font' => '3']`
+	 *           - `['type' => 'windowsfont', 'facename' => 'Arial', 'fontheight' => 48, 'fontstyle' => 0, 'fontunderline' => 0]`
+	 *   - `xMultiplication` : 1-10 (TSPL only)
+	 *   - `yMultiplication` : 1-10 (TSPL only)
 	 *   - `characterHeight` : scalable font: 10-32000, bitmapped font: 1-10 (ZPL only)
 	 *   - `characterWidth`  : scalable font: 10-32000, bitmapped font: 1-10 (ZPL only)
 	 *   - `alignment` : `left` or `center` or `right` (TSPL only)
 	 *   - `rotation` : 0 or 90 or 180 or 270
-	 *   - ...
 	 */
 	public function addText($params) {
 		$params = array_merge([
@@ -211,8 +224,8 @@ class LabelPrinting {
 			'y' => null,
 			'text' => '',
 			'font' => '0',
-			'xMultiplication' => 1,
-			'yMultiplication' => 1,
+			'xMultiplication' => ($this->language === 'TSPL' && (string) $params['font'] === '0' ? 8 : 1),  //For font "0", this parameter is used to specify the width (point) of true type font. 1 point=1/72 inch
+			'yMultiplication' => ($this->language === 'TSPL' && (string) $params['font'] === '0' ? 8 : 1),  //For font "0", this parameter is used to specify the height (point) of true type font. 1 point=1/72 inch
 			'characterHeight' => 30,
 			'characterWidth' => 30,
 			'alignment' => 'left',
@@ -226,10 +239,19 @@ class LabelPrinting {
 				'center' => '2',
 				'right' => '3',
 			];
-			$this->callActiveX('sendcommand', 'TEXT '. $params['x'] .','. $params['y'] .','. var_export($params['font'], true) .','. $params['rotation'] .','. $params['xMultiplication'] .','. $params['yMultiplication'] .','. $alignMap[$params['alignment']] .',"'. str_replace('"', "\\\"", $params['text']) .'"');
-			// $this->callActiveX('printerfont', '50', '50', '3', '0', '1', '1', 'Font Test');
+			if (is_array($params['font']) && $params['font']['type'] === 'printerfont') {
+				$this->callActiveX('printerfont', $params['x'], $params['y'], $params['font']['font'], $params['rotation'], $params['xMultiplication'], $params['yMultiplication'], $params['text']);
+			} elseif (is_array($params['font']) && $params['font']['type'] === 'windowsfont') {
+				$this->callActiveX('windowsfont', $params['x'], $params['y'], $params['font']['fontheight'], $params['rotation'], $params['font']['fontstyle'], $params['font']['fontunderline'], $params['font']['facename'], $params['text']);
+			} else {
+				$this->callActiveX('sendcommand', 'TEXT '. $params['x'] .','. $params['y'] .',"'. str_replace('"', "\\\"", (string) $params['font']) .'",'. $params['rotation'] .','. $params['xMultiplication'] .','. $params['yMultiplication'] .','. $alignMap[$params['alignment']] .',"'. str_replace('"', "\\\"", (string) $params['text']) .'"');
+			}
 
 		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
+			if (is_array($params['font'])) {
+				throw new \Exception('The font parameter may not be an array when ZPL is used (only when COM object and TSPL is used).');
+			}
+
 			$rotateMap = [
 				0 => 'N',
 				90 => 'R',
@@ -260,6 +282,7 @@ class LabelPrinting {
 		$this->checkInit();
 		if ($this->interface === 'USB-TSPL') {
 			$this->callActiveX('barcode', '50', '100', '128', '70', '0', '0', '3', '1', '123456');
+			// $this->callActiveX('barcode', '100', '40', '128', '50', '1', '0', '2', '2', '123456789');
 
 		} elseif ($this->interface === 'USB-ZPL') {
 			// TODO
@@ -343,11 +366,9 @@ class LabelPrinting {
 
 	/**
 	 * @param array $params : Available parameters:
-	 *   - ...
 	 *   - `x` : X position
 	 *   - `y` : Y position
 	 *   - `imageFile` : full path to image file (currently only PNG is supported)
-	 *   - ...
 	 */
 	public function addImage($params) {
 		$params = array_merge([
@@ -441,8 +462,9 @@ class LabelPrinting {
 
 	/**
 	 * @param array $params : Available parameters:
-	 *   - ...
-	 * @return mixed : Probably only meaning for the HTTP-UNOFFICIAL interface
+	 *   - `labelSets` : number of label sets, default 1
+	 *   - `copies` : number of copies, default 1
+	 * @return mixed : Probably only meaningful for the HTTP-UNOFFICIAL interface
 	 */
 	public function printLabel($params = []) {
 		$params = array_merge([
@@ -553,7 +575,7 @@ class LabelPrinting {
 	 * Convert millimeters to dots
 	 *
 	 * - 203 DPI: 1 mm = 8 dots
-	 * - 300 DPI: 1mm = 11.8 dots
+	 * - 300 DPI: 1 mm = 11.8 dots
 	 * - TSPL: only integer portion will be used. Ex. 2 mm = 23.6 dots then 23 dots will be used, so we round to nearest whole number
 	 */
 	function mmToDots($mm, $dotsPerMm = 8) {
