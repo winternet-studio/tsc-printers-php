@@ -39,6 +39,6 @@ to the require section of your `composer.json` file.
 Usage
 -----
 
-See the documentation with full example in `LabelPrinting.php`.
+See the documentation with full example in [LabelPrinting.php](./LabelPrinting.php).
 
 See the source code to fully understand how to use this library.

@@ -12,7 +12,7 @@ namespace winternet\tscprinters;
  *
  * Example:
  * ```
- * $tsc = new \winternet\tscprinters\LabelPrinting(['USB', 'TSPL', 'TSCDA220']);
+ * $tsc = new \winternet\tscprinters\LabelPrinting(['USB', 'TSPL', 'TSCDA220'], ['debug' => true]);
  * $tsc->newLabel([
  * 	'width' => 101.6,
  * 	'height' => 152.4,
@@ -23,8 +23,24 @@ namespace winternet\tscprinters;
  * $tsc->addText(['text' => 'ABCDefghi', 'font' => '2', 'x' => 0, 'y' => 30]);
  * $tsc->addText(['text' => '987650001', 'font' => ['type' => 'windowsfont', 'facename' => 'Arial', 'fontheight' => 48, 'fontstyle' => 0, 'fontunderline' => 0], 'x' => 0, 'y' => 60]);
  * $tsc->addLine(['x' => 0, 'y' => 60, 'width' => 30, 'thickness' => 3]);
+ * $tsc->addBarcode(['x' => 0, 'y' => 70, 'barcodeType' => '128', 'height' => 50, 'data' => 'SW1234578']);
  * $tsc->addImage(['imageFile' => __DIR__ .'/myimage.png', 'x' => 0, 'y' => 60]);
  * $tsc->printLabel();
+ * var_dump($tsc->debugInfo);
+ *
+ * // Examples of custom commands:
+ * $tsc->customCommand('GAPDETECT');  //calls ActiveXsendcommand()
+ * $tsc->customCommand('DIRECTION 1,0');
+ * $tsc->customCommand('PUTPCX 1,1,"UL.PCX"');
+ * $tsc->customCommand('PUTBMP 10,10,"UL.BMP"');
+ * $tsc->customCommand('FILES');
+ * $tsc->customCommand('KILL F,"UL.BMP"');
+ * $tsc->callActiveX('downloadpcx', 'C:\myfiles\UL.PCX', 'UL.PCX');  //calls ActiveXdownloadpcx()
+ * $tsc->callActiveX('windowsfont', 400, 200, 48, 0, 3, 1, 'arial', 'DEG 0');  //calls ActiveXwindowsfont()
+ * $tsc->callActiveX('windowsfont', 400, 200, 48, 90, 3, 1, 'arial', 'DEG 90');
+ * $tsc->callActiveX('windowsfont', 400, 200, 48, 180, 3, 1, 'arial', 'DEG 180');
+ * $tsc->callActiveX('windowsfont', 400, 200, 48, 270, 3, 1, 'arial', 'DEG 270');
+ * $tsc->callActiveX('barcode', '100', '40', '128', '50', '1', '0', '2', '2', '123456789');
  * ```
  *
  * ZPL basic example:
@@ -273,22 +289,63 @@ class LabelPrinting {
 	/**
 	 * @param array $params : Available parameters:
 	 *   - ...
+	 *   - `barcodeType` : see TSPL and ZPL documentation. Eg. `128` in TSPL.
+	 *   - `height` : barcode height in dots
+	 *   - `printPlaintext` : `below`, `above` or `none` (`above` only supported in ZPL)
+	 *   - `plaintextAlignment` : `left` or `center` or `right` (TSPL only)
+	 *   - `rotation` : 0 or 90 or 180 or 270
+	 *   - `narrowWidth` : width of narrow element (in dots)
+	 *   - `wideWidth` : width of wide element (in dots)
+	 *   - `alignment` : `left` or `center` or `right` (TSPL only)
+	 *   - `data` : data to make barcode of
 	 */
 	public function addBarcode($params) {
 		$params = array_merge([
-			'' => '',
+			'x' => null,
+			'y' => null,
+			'barcodeType' => '128',
+			'height' => 50,
+			'printPlaintext' => 'below',
+			'plaintextAlignment' => 'center',
+			'rotation' => 0,
+			'narrowWidth' => 3,
+			'wideWidth' => 5,
+			'alignment' => 'left',
+			'data' => '',
 		], $params);
 
 		$this->checkInit();
 		if ($this->interface === 'USB-TSPL') {
+			if ($params['printPlaintext'] === 'none') {
+				$humanReadable = 0;
+			} else {
+				if ($params['plaintextAlignment'] === 'left') {
+					$humanReadable = 1;
+				} elseif ($params['plaintextAlignment'] === 'center') {
+					$humanReadable = 2;
+				} elseif ($params['plaintextAlignment'] === 'right') {
+					$humanReadable = 3;
+				}
+			}
+			$alignMap = [
+				'left' => '1',
+				'center' => '2',
+				'right' => '3',
+			];
+			$this->callActiveX('sendcommand', 'BARCODE '. $params['x'] .','. $params['y'] .',"'. str_replace('"', "\\\"", (string) $params['barcodeType']) .'",'. $params['height'] .','. $humanReadable .','. $params['rotation'] .','. $params['narrowWidth'] .','. $params['wideWidth'] .','. $alignMap[$params['alignment']] .',"'. str_replace('"', "\\\"", (string) $params['data']) .'"');
+			/*
+			ActiveX examples - but they have less features:
 			$this->callActiveX('barcode', '50', '100', '128', '70', '0', '0', '3', '1', '123456');
-			// $this->callActiveX('barcode', '100', '40', '128', '50', '1', '0', '2', '2', '123456789');
+			$this->callActiveX('barcode', '100', '40', '128', '50', '1', '0', '2', '2', '123456789');
+			*/
 
-		} elseif ($this->interface === 'USB-ZPL') {
-			// TODO
+		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
+			if ($this->interface === 'USB-ZPL') {
+				// TODO
 
-		} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-			// TODO
+			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
+				// TODO
+			}
 		}
 	}
 
