@@ -426,12 +426,14 @@ class LabelPrinting {
 	 *   - `x` : X position
 	 *   - `y` : Y position
 	 *   - `imageFile` : full path to image file (currently only PNG is supported)
+	 *   - `imageFileIsContent` : set true if you provide the file content in `imageFile` instead of a path to a file
 	 */
 	public function addImage($params) {
 		$params = array_merge([
 			'x' => null,
 			'y' => null,
 			'imageFile' => null,
+			'imageFileIsContent' => false,
 		], $params);
 
 		if (!file_exists($params['imageFile'])) {
@@ -444,13 +446,18 @@ class LabelPrinting {
 				throw new \Exception('PHP gd extension is not installed.');
 			}
 
-			if (!file_exists($params['imageFile'])) {
+			if (!$params['imageFileIsContent'] && !file_exists($params['imageFile'])) {
 				throw new \Exception('Image file to print line by line does not exist.');
 			}
 
 			// This is a work-around for printing images which is normally not supported in TSPL within PHP
-			$im     = imagecreatefrompng($params['imageFile']);
-			$size   = getimagesize($params['imageFile']);
+			if ($params['imageFileIsContent']) {
+				$im   = imagecreatefromstring($params['imageFile']);
+				$size = getimagesizefromstring($params['imageFile']);
+			} else {
+				$im   = imagecreatefrompng($params['imageFile']);
+				$size = getimagesize($params['imageFile']);
+			}
 			$width  = $size[0];
 			$height = $size[1];
 
@@ -653,20 +660,26 @@ class LabelPrinting {
 	 *
 	 * @copyright Thomas Bruederli <inbox@brotherli.ch>
 	 *
-	 * @param string $filename : Path to the input file
+	 * @param string $filename : Path to the input file (or file content is you set `$isFileContent`=true)
+	 * @param boolean $isFileContent : Set true if you provide the file content in `$filename` instead of a path to a file.
 	 * @return array
 	 */
-	public function imageToGrf($filename) {
+	public function imageToGrf($filename, $isFileContent = false) {
 		if (!extension_loaded('gd')) {
 			throw new \Exception('PHP gd extension is not installed.');
 		}
 
-		if (!file_exists($filename)) {
+		if (!$isFileContent && !file_exists($filename)) {
 			throw new \Exception('Image file to convert to GRF does not exist.');
 		}
 
-		$info = getimagesize($filename);
-		$im = imagecreatefrompng($filename);
+		if ($isFileContent) {
+			$info = getimagesizefromstring($filename);
+			$im = imagecreatefromstring($filename);
+		} else {
+			$info = getimagesize($filename);
+			$im = imagecreatefrompng($filename);
+		}
 		$width = $info[0]; // imagesx($im);
 		$height = $info[1]; // imagesy($im);
 		$depth = $info['bits'] ?: 1;
