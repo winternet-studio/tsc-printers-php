@@ -444,7 +444,7 @@ class LabelPrinting {
 			'imageFileIsContent' => false,
 		], $params);
 
-		if (!file_exists($params['imageFile'])) {
+		if (!$params['imageFileIsContent'] && !file_exists($params['imageFile'])) {
 			throw new \Exception('Image file '. $params['imageFile'] .' does not exist.');
 		}
 
@@ -452,10 +452,6 @@ class LabelPrinting {
 		if ($this->language === 'TSPL') {
 			if (!extension_loaded('gd')) {
 				throw new \Exception('PHP gd extension is not installed.');
-			}
-
-			if (!$params['imageFileIsContent'] && !file_exists($params['imageFile'])) {
-				throw new \Exception('Image file to print line by line does not exist.');
 			}
 
 			// This is a work-around for printing images which is normally not supported in TSPL within PHP
