@@ -82,14 +82,14 @@ class LabelPrinting {
 	public $language = null;
 
 	/**
-	 * @var string : Whether we are using `USB-ZPL`, `USB-TSPL` or `HTTP-UNOFFICIAL` interface
+	 * @var string : Whether we are using `USB` or `HTTP-UNOFFICIAL` interface
 	 */
 	public $interface = null;
 
 	/**
-	 * @var array : Buffer for holding commands for writing label, eg. ZPL commands
+	 * @var array : Buffer for holding commands for writing label
 	 */
-	public $lineBuffer = [];
+	public $commandBuffer = [];
 
 	/**
 	 * @var boolean : Whether a new label has been initialized
@@ -114,7 +114,7 @@ class LabelPrinting {
 	 *       - the third parameter is the printer name you set during driver installation (NOT the share name, nor the USB port number (eg. "USB001"))
 	 *   - `['HTTP-UNOFFICIAL', 'ZPL', '192.168.1.100']´ for connecting purely over ethernet (sort of like a REST API)
 	 *       - using the printer's unofficial web interface to upload a file with ZPL commands. Doesn't require the printer driver, COM .dll registration, or anything else installed.
-	 *       - the second parameter is the printer language to use, only `ZPL` is currently supported
+	 *       - the second parameter is the printer language to use: `ZPL` or `TSPL`
 	 *   - Notes: There is no guarantee that using ZPL vs TSPL will render exactly the same way, so don't expect that you can just switch language without adjusting parameters in your method calls.
 	 * @param array $options : Available options:
 	 *   - `httpHandler` : option for implementing your own HTTP client to handle the process of communicating with the unofficial web interface of the printer. See code for arguments and details.
@@ -124,19 +124,20 @@ class LabelPrinting {
 		$this->connectConfig = $connectConfig;
 		$this->options = $options;
 
+		if ($connectConfig[1] === 'TSPL') {
+			$this->language = 'TSPL';
+		} elseif ($connectConfig[1] === 'ZPL') {
+			$this->language = 'ZPL';
+		} else {
+			throw new \Exception('Invalid second parameter of connectConfig in the TscPrinter constructor.');
+		}
+
 		if ($connectConfig[0] === 'USB') {
 			if (!extension_loaded('com_dotnet')) {
 				throw new \Exception('PHP COM extension is not installed.');
 			}
-			if ($connectConfig[1] === 'TSPL') {
-				$this->interface = 'USB-TSPL';
-				$this->language = 'TSPL';
-			} elseif ($connectConfig[1] === 'ZPL') {
-				$this->interface = 'USB-ZPL';
-				$this->language = 'ZPL';
-			} else {
-				throw new \Exception('Invalid second parameter of connectConfig in the TscPrinter constructor.');
-			}
+
+			$this->interface = 'USB';
 			if ($connectConfig[2]) {
 				$this->com = new \COM('TSCActiveX.TSCLIB');
 				if ($this->options['debug']) {
@@ -149,7 +150,6 @@ class LabelPrinting {
 
 		} elseif ($connectConfig[0] === 'HTTP-UNOFFICIAL') {
 			$this->interface = 'HTTP-UNOFFICIAL';
-			$this->language = 'ZPL';
 			$this->ipAddress = $connectConfig[2];
 
 		} else {
@@ -158,7 +158,7 @@ class LabelPrinting {
 	}
 
 	function __destruct() {
-		if ($this->interface === 'USB-ZPL' || $this->interface === 'USB-TSPL') {
+		if ($this->interface === 'USB') {
 			$this->callActiveX('closeport');
 		}
 	}
@@ -184,32 +184,32 @@ class LabelPrinting {
 			'characterSet' => null,
 		], $params);
 
-		if ($this->interface === 'USB-TSPL') {
-			$this->callActiveX('setup', $params['width'], $params['height'], $params['speed'], $params['density'], ($params['sensor'] === 'gap' ? 0 : 1), $params['vertical'], $params['offset']);
-			$this->callActiveX('clearbuffer');
-			if ($params['characterSet']) {
-				$this->callActiveX('sendcommand', 'CODEPAGE '. $params['characterSet']);
+		$this->commandBuffer = [];
+
+		if ($this->language === 'TSPL') {
+			if ($this->interface === 'USB') {
+				$this->callActiveX('setup', $params['width'], $params['height'], $params['speed'], $params['density'], ($params['sensor'] === 'gap' ? 0 : 1), $params['vertical'], $params['offset']);
+				$this->callActiveX('clearbuffer');
+				if ($params['characterSet']) {
+					$this->callActiveX('sendcommand', 'CODEPAGE '. $params['characterSet']);
+				}
+			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
+				// TODO: set label size etc
+
 			}
 
-		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
+		} elseif ($this->language === 'ZPL') {
 			// TODO: set label size etc
 
-			if ($this->interface === 'USB-ZPL') {
-				$this->callActiveX('sendcommand', '^XA');
-				if ($params['characterSet']) {
-					$this->callActiveX('sendcommand', '^CI'. $params['characterSet']);
-				} else {
-					$this->callActiveX('sendcommand', '^CI28');  //enable unicode
-				}
+			$this->commandBuffer[] = '^XA';
+			if ($params['characterSet']) {
+				$this->commandBuffer[] = '^CI'. $params['characterSet'];
+			} else {
+				$this->commandBuffer[] = '^CI28';  //enable unicode
+			}
 
-			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-				$this->lineBuffer = [];
-				$this->lineBuffer[] = '^XA';
-				if ($params['characterSet']) {
-					$this->lineBuffer[] = '^CI'. $params['characterSet'];
-				} else {
-					$this->lineBuffer[] = '^CI28';  //enable unicode
-				}
+			if ($this->interface === 'USB') {
+				$this->executeCommandBuffer();
 			}
 		}
 
@@ -249,21 +249,31 @@ class LabelPrinting {
 		], $params);
 
 		$this->checkInit();
-		if ($this->interface === 'USB-TSPL') {
+		if ($this->language === 'TSPL') {
 			$alignMap = [
 				'left' => '1',
 				'center' => '2',
 				'right' => '3',
 			];
-			if (is_array($params['font']) && $params['font']['type'] === 'printerfont') {
+			if ($this->interface === 'USB' && is_array($params['font']) && $params['font']['type'] === 'printerfont') {
 				$this->callActiveX('printerfont', $params['x'], $params['y'], $params['font']['font'], $params['rotation'], $params['xMultiplication'], $params['yMultiplication'], $params['text']);
-			} elseif (is_array($params['font']) && $params['font']['type'] === 'windowsfont') {
+			} elseif ($this->interface === 'USB' && is_array($params['font']) && $params['font']['type'] === 'windowsfont') {
 				$this->callActiveX('windowsfont', $params['x'], $params['y'], $params['font']['fontheight'], $params['rotation'], $params['font']['fontstyle'], $params['font']['fontunderline'], $params['font']['facename'], $params['text']);
 			} else {
-				$this->callActiveX('sendcommand', 'TEXT '. $params['x'] .','. $params['y'] .',"'. str_replace('"', "\\\"", (string) $params['font']) .'",'. $params['rotation'] .','. $params['xMultiplication'] .','. $params['yMultiplication'] .','. $alignMap[$params['alignment']] .',"'. str_replace('"', "\\\"", (string) $params['text']) .'"');
+				if (is_array($params['font'])) {
+					throw new \Exception('The font parameter may only be an array when USB interface is used (only when COM object and TSPL is used).');
+				}
+				$tspl = 'TEXT '. $params['x'] .','. $params['y'] .',"'. str_replace('"', "\\\"", (string) $params['font']) .'",'. $params['rotation'] .','. $params['xMultiplication'] .','. $params['yMultiplication'] .','. $alignMap[$params['alignment']] .',"'. str_replace('"', "\\\"", (string) $params['text']) .'"';
+
+				if ($this->interface === 'USB') {
+					$this->callActiveX('sendcommand', $tspl);
+
+				} elseif ($this->interface === 'TSPL') {
+					$this->commandBuffer[] = $tspl;
+				}
 			}
 
-		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
+		} elseif ($this->language === 'ZPL') {
 			if (is_array($params['font'])) {
 				throw new \Exception('The font parameter may not be an array when ZPL is used (only when COM object and TSPL is used).');
 			}
@@ -277,11 +287,10 @@ class LabelPrinting {
 			$zpl  = '^FO'. $params['x'] .','. $params['y'] .'^A'. $params['font'] .','. $rotateMap[$params['rotation']] .','. $params['characterHeight'] .','. $params['characterWidth'];
 			$zpl .= '^FD'. $params['text'] .'^FS';
 
-			if ($this->interface === 'USB-ZPL') {
-				$this->callActiveX('sendcommand', $zpl);
+			$this->commandBuffer[] = $zpl;
 
-			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-				$this->lineBuffer[] = $zpl;
+			if ($this->interface === 'USB') {
+				$this->executeCommandBuffer();
 			}
 		}
 	}
@@ -315,7 +324,7 @@ class LabelPrinting {
 		], $params);
 
 		$this->checkInit();
-		if ($this->interface === 'USB-TSPL') {
+		if ($this->language === 'TSPL') {
 			if ($params['printPlaintext'] === 'none') {
 				$humanReadable = 0;
 			} else {
@@ -332,20 +341,25 @@ class LabelPrinting {
 				'center' => '2',
 				'right' => '3',
 			];
-			$this->callActiveX('sendcommand', 'BARCODE '. $params['x'] .','. $params['y'] .',"'. str_replace('"', "\\\"", (string) $params['barcodeType']) .'",'. $params['height'] .','. $humanReadable .','. $params['rotation'] .','. $params['narrowWidth'] .','. $params['wideWidth'] .','. $alignMap[$params['alignment']] .',"'. str_replace('"', "\\\"", (string) $params['data']) .'"');
+			$tspl = 'BARCODE '. $params['x'] .','. $params['y'] .',"'. str_replace('"', "\\\"", (string) $params['barcodeType']) .'",'. $params['height'] .','. $humanReadable .','. $params['rotation'] .','. $params['narrowWidth'] .','. $params['wideWidth'] .','. $alignMap[$params['alignment']] .',"'. str_replace('"', "\\\"", (string) $params['data']) .'"';
+
+			$this->commandBuffer[] = $tspl;
+
 			/*
 			ActiveX examples - but they have less features:
 			$this->callActiveX('barcode', '50', '100', '128', '70', '0', '0', '3', '1', '123456');
 			$this->callActiveX('barcode', '100', '40', '128', '50', '1', '0', '2', '2', '123456789');
 			*/
 
-		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
-			if ($this->interface === 'USB-ZPL') {
-				// TODO
+		} elseif ($this->language === 'ZPL') {
+			// TODO
 
-			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-				// TODO
-			}
+			$this->commandBuffer[] = '...';
+
+		}
+
+		if ($this->interface === 'USB') {
+			$this->executeCommandBuffer();
 		}
 	}
 
@@ -354,7 +368,7 @@ class LabelPrinting {
 	 *   - `cornerRadius` : ZPL: 0-8, TSPL: 0-?
 	 *   - `borderColor` : ZPL: `black` or `white`, TSPL: <not available>
 	 */
-	public function addLine($params) {
+	public function addLine($params, $executeImmediately = true) {
 		// Apply thickness when using TSPL by setting height of box
 		if ($this->language === 'TSPL') {
 			if (array_key_exists('thickness', $params) && !array_key_exists('width', $params)) {
@@ -374,18 +388,15 @@ class LabelPrinting {
 		], $params);
 
 		$this->checkInit();
-		if ($this->interface === 'USB-TSPL') {
-			$this->callActiveX('sendcommand', 'BAR '. $params['x'] .','. $params['y'] .','. $params['width'] .','. $params['height']);
+		if ($this->language === 'TSPL') {
+			$this->commandBuffer[] = 'BAR '. $params['x'] .','. $params['y'] .','. $params['width'] .','. $params['height'];
 
-		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
-			$zpl = '^FO'. $params['x'] .','. $params['y'] .'^GB'. $params['width'] .','. $params['height'] .','. $params['thickness'] .','. strtoupper(substr($params['borderColor'], 0, 1)) .','. $params['cornerRadius'] .'^FS';
+		} elseif ($this->language === 'ZPL') {
+			$this->commandBuffer[] = '^FO'. $params['x'] .','. $params['y'] .'^GB'. $params['width'] .','. $params['height'] .','. $params['thickness'] .','. strtoupper(substr($params['borderColor'], 0, 1)) .','. $params['cornerRadius'] .'^FS';
+		}
 
-			if ($this->interface === 'USB-ZPL') {
-				$this->callActiveX('sendcommand', $zpl);
-
-			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-				$this->lineBuffer[] = $zpl;
-			}
+		if ($this->interface === 'USB' && $executeImmediately) {
+			$this->executeCommandBuffer();
 		}
 	}
 
@@ -406,18 +417,15 @@ class LabelPrinting {
 		], $params);
 
 		$this->checkInit();
-		if ($this->interface === 'USB-TSPL') {
-			$this->callActiveX('sendcommand', 'BOX '. $params['ulX'] .','. $params['ulY'] .','. $params['lrX'] .','. $params['lrY'] .','. $params['thickness'] .','. $params['cornerRadius']);
+		if ($this->language === 'TSPL') {
+			$this->commandBuffer[] = 'BOX '. $params['ulX'] .','. $params['ulY'] .','. $params['lrX'] .','. $params['lrY'] .','. $params['thickness'] .','. $params['cornerRadius'];
 
-		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
-			$zpl = '^FO'. $params['ulX'] .','. $params['ulY'] .'^GB'. ($params['lrX'] - $params['ulX']) .','. ($params['lrY'] - $params['ulY']) .','. $params['thickness'] .','. strtoupper(substr($params['borderColor'], 0, 1)) .','. $params['cornerRadius'] .'^FS';
+		} elseif ($this->language === 'ZPL') {
+			$this->commandBuffer[] = '^FO'. $params['ulX'] .','. $params['ulY'] .'^GB'. ($params['lrX'] - $params['ulX']) .','. ($params['lrY'] - $params['ulY']) .','. $params['thickness'] .','. strtoupper(substr($params['borderColor'], 0, 1)) .','. $params['cornerRadius'] .'^FS';
+		}
 
-			if ($this->interface === 'USB-ZPL') {
-				$this->callActiveX('sendcommand', $zpl);
-
-			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-				$this->lineBuffer[] = $zpl;
-			}
+		if ($this->interface === 'USB') {
+			$this->executeCommandBuffer();
 		}
 	}
 
@@ -441,7 +449,7 @@ class LabelPrinting {
 		}
 
 		$this->checkInit();
-		if ($this->interface === 'USB-TSPL') {
+		if ($this->language === 'TSPL') {
 			if (!extension_loaded('gd')) {
 				throw new \Exception('PHP gd extension is not installed.');
 			}
@@ -467,7 +475,7 @@ class LabelPrinting {
 
 			$printLine = function($startXindex, $endXindex, $yIndex) use (&$xPos, &$yPos) {
 				$width = $endXindex - $startXindex;
-				$this->addLine(['x' => $startXindex+1 + $xPos, 'y' => $yIndex+1 + $yPos, 'width' => $width, 'height' => 1]);
+				$this->addLine(['x' => $startXindex+1 + $xPos, 'y' => $yIndex+1 + $yPos, 'width' => $width, 'height' => 1], false);
 			};
 
 			// $o = '';
@@ -511,16 +519,17 @@ class LabelPrinting {
 			}
 			// file_put_contents('o.txt', $o);
 
-		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
+		} elseif ($this->language === 'ZPL') {
+			// TODO
 			$grf = $this->imageToGrf($params['imageFile']);
-			$zpl = '^FO'. $params['x'] .','. $params['y'] .'^GFA,'. $grf['bytesTotal'] .','. $grf['bytesTotal'] .','. $grf['bytesPerRow'] .','. $grf['hexString'];
+			$zpl = '^FO'. $params['x'] .','. $params['y'] .'^GFA,'. $grf['bytesTotal'] .','. $grf['bytesTotal'] .','. $grf['bytesPerRow'] .','. $grf['hexString'] .'^FS';
 			// TODO: this doesn't work yet!
-			if ($this->interface === 'USB-ZPL') {
-				$this->callActiveX('sendcommand', $zpl);
 
-			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-				$this->lineBuffer[] = $zpl;
-			}
+			$this->commandBuffer[] = $zpl;
+		}
+
+		if ($this->interface === 'USB') {
+			$this->executeCommandBuffer();
 		}
 	}
 
@@ -536,32 +545,37 @@ class LabelPrinting {
 			'copies' => 1,
 		], $params);
 
-		if ($this->interface === 'USB-TSPL') {
-			$result = $this->callActiveX('printlabel', $params['labelSets'], $params['copies']);
+		$this->checkInit();
+		if ($this->language === 'TSPL') {
+			if ($this->interface === 'USB') {
+				$result = $this->callActiveX('printlabel', $params['labelSets'], $params['copies']);
+			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
+				// TODO
+			}
 
-		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
-			$zpl = '^XZ';
+		} elseif ($this->language === 'ZPL') {
+			$this->commandBuffer[] = '^XZ';
 
-			if ($this->interface === 'USB-ZPL') {
-				$result = $this->callActiveX('sendcommand', $zpl);
+			if ($this->interface === 'USB') {
+				$this->executeCommandBuffer();
 
 			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-				$this->lineBuffer[] = $zpl;
-				$zplCommands = implode(PHP_EOL, $this->lineBuffer);
-				$this->lineBuffer = [];  //clear line buffer
+				$commandsString = implode(PHP_EOL, $this->commandBuffer);
+				$this->commandBuffer = [];  //clear line buffer
 
 				if (is_callable($this->options['httpHandler'])) {
-					$result = $this->options['httpHandler']($this->ipAddress, $zplCommands);
+					$result = $this->options['httpHandler']($this->ipAddress, $commandsString);
 				} else {
-					$result = $this->httpUploadZplFile($this->ipAddress, $zplCommands);
+					$result = $this->httpUploadZplFile($this->ipAddress, $commandsString);
 				}
 
 				if ($this->options['debug']) {
-					$this->debugInfo[] = $zplCommands;
-					$result['zplCommands'] = $zplCommands;
+					$this->debugInfo[] = $commandsString;
+					$result['zplCommands'] = $commandsString;
 				}
 			}
 		}
+
 		return $result;
 	}
 
@@ -569,16 +583,10 @@ class LabelPrinting {
 	 * @param string $command : Any TSPL or ZPL command, depending on your connection configuration
 	 */
 	public function customCommand($command) {
-		if ($this->interface === 'USB-TSPL') {
-			$this->callActiveX('sendcommand', $command);
+		$this->commandBuffer[] = $command;
 
-		} elseif (in_array($this->interface, ['USB-ZPL', 'HTTP-UNOFFICIAL'])) {
-			if ($this->interface === 'USB-ZPL') {
-				$this->callActiveX('sendcommand', $command);
-
-			} elseif ($this->interface === 'HTTP-UNOFFICIAL') {
-				$this->lineBuffer[] = $command;
-			}
+		if ($this->interface === 'USB') {
+			$this->executeCommandBuffer();
 		}
 	}
 
@@ -603,6 +611,18 @@ class LabelPrinting {
 		if ($this->options['debug']) {
 			$this->debugInfo[] = ['activeXfunction' => $activeXFunction, 'arguments' => $passOnArguments];
 		}
+	}
+
+	/**
+	 * Execute the commands in the command buffer using the USB/COM object ActiveX calls
+	 *
+	 * The buffer is emptied afterwards.
+	 */
+	public function executeCommandBuffer() {
+		foreach ($this->commandBuffer as $command) {
+			$this->callActiveX('sendcommand', $command);
+		}
+		$this->commandBuffer = [];
 	}
 
 	/**
